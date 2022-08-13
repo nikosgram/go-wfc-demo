@@ -1,0 +1,5 @@
+0: dirt
+1: grass
+2: grass_road
+3: dirt_road
+4: forest
