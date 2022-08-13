@@ -61,7 +61,6 @@ demo was to create a 2D map based on those tiles as fast as possible.
 ![](assets/forest_to_dirt_t_road_straight.png)
 ![](assets/forest_to_firt_t_road_straight.png)
 ![](assets/forest_to_grass.png)
-![](assets/forest_to_grass copy.png)
 ![](assets/forest_to_grass_corner.png)
 ![](assets/forest_to_grass_t.png)
 ![](assets/forest_to_grass_t_road_straight.png)
