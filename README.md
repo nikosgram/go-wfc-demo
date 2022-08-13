@@ -2,7 +2,11 @@
 
 Golang Wave Function Collapse Demo
 
+*Examples*
+
 ![screneshot.png](screenshot.png)
+
+![screneshot_2.png](screenshot_2.png)
 
 This demo is generating a map based on a set of "structs" located in the input.json file. The main idea behind of this
 demo was to create a 2D map based on those tiles as fast as possible.
