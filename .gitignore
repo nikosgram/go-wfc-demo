@@ -119,3 +119,4 @@ fabric.properties
 
 # Ignore output file
 output.json
+output.png

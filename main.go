@@ -3,9 +3,14 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"image"
+	"image/color"
+	"image/png"
 	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -46,6 +51,8 @@ var (
 	IndexedPosZ = make(map[int64]int64) // [Index] -> PosZ_ID
 	IndexedNegZ = make(map[int64]int64) // [Index] -> NegZ_ID
 
+	IndexedAssets = make(map[string][][]*color.RGBA64)
+
 	Indices []int64
 
 	// OutputMatrix [Z, [Y, [X]]]
@@ -54,108 +61,43 @@ var (
 	XSize int64 // Width Size
 	YSize int64 // Length Size
 	ZSize int64 // Height Size
+
+	InputJsonFilePath      string
+	OutputMapImageFilePath string
 )
 
-func main() {
-	var timeStart = time.Now()
-
-	var err error
+func init() {
+	// GLFW event handling must run on the main OS thread
+	runtime.LockOSThread()
 
 	// My current screen size divided by the size of the tiles (16x16)
-	flag.Int64Var(&XSize, "x", 2560/16, `X - Width Size`)
-	flag.Int64Var(&YSize, "y", 1440/16, `Y - Length Size`)
-	flag.Int64Var(&ZSize, "z", 1, `Z - Height Size`)
+	flag.Int64Var(&XSize, "x", 3840/16, `X - X amount of tiles`)
+	flag.Int64Var(&YSize, "y", 2160/16, `Y - Y amount of tiles`)
+	flag.Int64Var(&ZSize, "z", 1, `Z - Z amount of tiles`)
+	flag.StringVar(&InputJsonFilePath, "input", "input.json", "Input json file path")
+	flag.StringVar(&OutputMapImageFilePath, "output", "output.png", "Output map image file path")
 
 	flag.Parse()
+}
 
-	var structsFile *os.File
-	structsFile, err = os.Open(`input.json`)
+func RotateRGBA64Matrix(matrix [][]*color.RGBA64) [][]*color.RGBA64 {
+	var i, j int
 
-	if err != nil {
-		log.Fatalln(err)
-	}
+	var matrixLen = len(matrix)
+	var temp *color.RGBA64
 
-	var jsonDecoder = json.NewDecoder(structsFile)
-	err = jsonDecoder.Decode(&Structs)
+	for i = 0; i < matrixLen/2; i++ {
+		for j = i; j < matrixLen-i-1; j++ {
+			temp = matrix[i][j]
 
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	rand.Seed(time.Now().Unix() / 10 * 102)
-
-	GenerateRotations()
-
-	OutputMatrix = make([][][]int64, ZSize)
-
-	var z int64
-	for z = 0; z < ZSize; z++ {
-		OutputMatrix[z] = make([][]int64, YSize)
-
-		var y int64
-		for y = 0; y < YSize; y++ {
-			OutputMatrix[z][y] = make([]int64, XSize)
-
-			var x int64
-			for x = 0; x < XSize; x++ {
-				var leftPosYID int64
-				var topNegXID int64
-				var topPosZID int64
-				var acceptedIndices []int64
-
-				if x == 0 {
-					acceptedIndices = Indices
-				} else {
-					var leftIndex = OutputMatrix[z][y][x-1]
-					leftPosYID = IndexedPosY[leftIndex]
-
-					acceptedIndices = NegYIndices[leftPosYID]
-				}
-
-				if y != 0 {
-					var topIndex = OutputMatrix[z][y-1][x]
-					topNegXID = IndexedNegX[topIndex]
-					var posXIndices = PosXIndices[topNegXID]
-
-					acceptedIndices = GetDuplications(acceptedIndices, posXIndices)
-				}
-
-				if z != 0 {
-					var bottomIndex = OutputMatrix[z-1][y][x]
-					topPosZID = IndexedPosZ[bottomIndex]
-					var posZIndices = NegZIndices[topPosZID]
-
-					acceptedIndices = GetDuplications(acceptedIndices, posZIndices)
-				}
-
-				OutputMatrix[z][y][x] = acceptedIndices[rand.Int63n(int64(len(acceptedIndices)))]
-			}
+			matrix[i][j] = matrix[matrixLen-1-j][i]
+			matrix[matrixLen-1-j][i] = matrix[matrixLen-1-i][matrixLen-1-j]
+			matrix[matrixLen-1-i][matrixLen-1-j] = matrix[j][matrixLen-1-i]
+			matrix[j][matrixLen-1-i] = temp
 		}
 	}
 
-	var outputFile *os.File
-	outputFile, err = os.Create(`output.json`)
-
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	var jsonEncoder = json.NewEncoder(outputFile)
-	err = jsonEncoder.Encode(struct {
-		IndexedStructs map[int64]WFCStruct `json:"indexed_structs"`
-		OutputMatrix   [][][]int64         `json:"output_matrix"`
-	}{
-		IndexedStructs: IndexedStructs,
-		OutputMatrix:   OutputMatrix,
-	})
-
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	log.Printf(`Input structures %d`, len(Structs))
-	log.Printf(`Output structures %d`, len(IndexedStructs))
-	log.Printf(`Finished in %s`, time.Since(timeStart).String())
+	return matrix
 }
 
 func GetDuplications(firstArray, secondArray []int64) (returnedArray []int64) {
@@ -168,6 +110,7 @@ func GetDuplications(firstArray, secondArray []int64) (returnedArray []int64) {
 
 	for _, number = range secondArray {
 		var ok bool
+
 		if _, ok = allKeys[number]; ok {
 			returnedArray = append(returnedArray, number)
 		}
@@ -188,49 +131,39 @@ func AddWFCStructIntoStructs(i int64, wfcStruct WFCStruct) int64 {
 	IndexedPosZ[i] = wfcStruct.PosZ
 	IndexedNegZ[i] = wfcStruct.NegZ
 
-	var _, ok = PosXIndices[wfcStruct.PosX]
+	var ok bool
 
-	if !ok {
+	if _, ok = PosXIndices[wfcStruct.PosX]; !ok {
 		PosXIndices[wfcStruct.PosX] = make([]int64, 0, 10)
 	}
 
 	PosXIndices[wfcStruct.PosX] = append(PosXIndices[wfcStruct.PosX], i)
 
-	_, ok = PosYIndices[wfcStruct.PosY]
-
-	if !ok {
+	if _, ok = PosYIndices[wfcStruct.PosY]; !ok {
 		PosYIndices[wfcStruct.PosY] = make([]int64, 0, 10)
 	}
 
 	PosYIndices[wfcStruct.PosY] = append(PosYIndices[wfcStruct.PosY], i)
 
-	_, ok = NegXIndices[wfcStruct.NegX]
-
-	if !ok {
+	if _, ok = NegXIndices[wfcStruct.NegX]; !ok {
 		NegXIndices[wfcStruct.NegX] = make([]int64, 0, 10)
 	}
 
 	NegXIndices[wfcStruct.NegX] = append(NegXIndices[wfcStruct.NegX], i)
 
-	_, ok = NegYIndices[wfcStruct.NegY]
-
-	if !ok {
+	if _, ok = NegYIndices[wfcStruct.NegY]; !ok {
 		NegYIndices[wfcStruct.NegY] = make([]int64, 0, 10)
 	}
 
 	NegYIndices[wfcStruct.NegY] = append(NegYIndices[wfcStruct.NegY], i)
 
-	_, ok = PosZIndices[wfcStruct.PosZ]
-
-	if !ok {
+	if _, ok = PosZIndices[wfcStruct.PosZ]; !ok {
 		PosZIndices[wfcStruct.PosZ] = make([]int64, 0, 10)
 	}
 
 	PosZIndices[wfcStruct.PosZ] = append(PosZIndices[wfcStruct.PosZ], i)
 
-	_, ok = NegZIndices[wfcStruct.NegZ]
-
-	if !ok {
+	if _, ok = NegZIndices[wfcStruct.NegZ]; !ok {
 		NegZIndices[wfcStruct.NegZ] = make([]int64, 0, 10)
 	}
 
@@ -242,7 +175,8 @@ func AddWFCStructIntoStructs(i int64, wfcStruct WFCStruct) int64 {
 func GenerateRotations() {
 	var index int64 = 0
 
-	for _, wfcStruct := range Structs {
+	var wfcStruct WFCStruct
+	for _, wfcStruct = range Structs {
 		index = AddWFCStructIntoStructs(index, WFCStruct{
 			Texture:       wfcStruct.Texture,
 			Rotation:      0,
@@ -263,10 +197,10 @@ func GenerateRotations() {
 			Texture:       wfcStruct.Texture,
 			Rotation:      1,
 			AllowRotation: false,
-			PosX:          wfcStruct.NegY,
-			PosY:          wfcStruct.PosX,
-			NegX:          wfcStruct.PosY,
-			NegY:          wfcStruct.NegX,
+			PosX:          wfcStruct.PosY,
+			PosY:          wfcStruct.NegX,
+			NegX:          wfcStruct.NegY,
+			NegY:          wfcStruct.PosX,
 			PosZ:          wfcStruct.PosZ,
 			NegZ:          wfcStruct.NegZ,
 		})
@@ -285,12 +219,215 @@ func GenerateRotations() {
 			Texture:       wfcStruct.Texture,
 			Rotation:      3,
 			AllowRotation: false,
-			PosX:          wfcStruct.PosY,
-			PosY:          wfcStruct.NegX,
-			NegX:          wfcStruct.NegY,
-			NegY:          wfcStruct.PosX,
+			PosX:          wfcStruct.NegY,
+			PosY:          wfcStruct.PosX,
+			NegX:          wfcStruct.PosY,
+			NegY:          wfcStruct.NegX,
 			PosZ:          wfcStruct.PosZ,
 			NegZ:          wfcStruct.NegZ,
 		})
 	}
+}
+
+func LoadInput() (err error) {
+	var structsFile *os.File
+	if structsFile, err = os.Open(InputJsonFilePath); err != nil {
+		return
+	}
+
+	var jsonDecoder = json.NewDecoder(structsFile)
+	if err = jsonDecoder.Decode(&Structs); err != nil {
+		return
+	}
+
+	return
+}
+
+func GenerateMap() (err error) {
+	rand.Seed(time.Now().Unix() / 10 * 102)
+
+	OutputMatrix = make([][][]int64, ZSize)
+
+	var z, y, x int64
+	for z = 0; z < ZSize; z++ {
+		OutputMatrix[z] = make([][]int64, YSize)
+
+		for y = 0; y < YSize; y++ {
+			OutputMatrix[z][y] = make([]int64, XSize)
+
+			for x = 0; x < XSize; x++ {
+				var acceptedIndices []int64
+
+				if x == 0 {
+					acceptedIndices = Indices
+				} else {
+					var leftIndex = OutputMatrix[z][y][x-1]
+					var leftPosYID = IndexedPosY[leftIndex]
+
+					acceptedIndices = NegYIndices[leftPosYID]
+				}
+
+				if y != 0 {
+					var topIndex = OutputMatrix[z][y-1][x]
+					var topNegXID = IndexedNegX[topIndex]
+					var posXIndices = PosXIndices[topNegXID]
+
+					acceptedIndices = GetDuplications(acceptedIndices, posXIndices)
+				}
+
+				if z != 0 {
+					var bottomIndex = OutputMatrix[z-1][y][x]
+					var topPosZID = IndexedPosZ[bottomIndex]
+					var posZIndices = NegZIndices[topPosZID]
+
+					acceptedIndices = GetDuplications(acceptedIndices, posZIndices)
+				}
+
+				OutputMatrix[z][y][x] = acceptedIndices[rand.Int63n(int64(len(acceptedIndices)))]
+			}
+		}
+	}
+
+	return
+}
+
+func LoadAssets() (err error) {
+	for _, wfcStruct := range Structs {
+		var texturePath = wfcStruct.Texture
+		var textureName = filepath.Base(texturePath)
+
+		var textureFile *os.File
+		if textureFile, err = os.Open(texturePath); err != nil {
+			return
+		}
+
+		var textureImage image.Image
+		if textureImage, err = png.Decode(textureFile); err != nil {
+			return
+		}
+
+		var imageSize = textureImage.Bounds().Size()
+		var textureMatrix = make([][]*color.RGBA64, imageSize.X)
+
+		var x, y int
+		for x = 0; x < imageSize.X; x++ {
+			textureMatrix[x] = make([]*color.RGBA64, imageSize.Y)
+
+			for y = 0; y < imageSize.Y; y++ {
+				var rgba64At = textureImage.(*image.RGBA).RGBA64At(x, y)
+
+				textureMatrix[x][y] = &rgba64At
+			}
+		}
+
+		IndexedAssets[textureName] = textureMatrix
+	}
+
+	return
+}
+
+func GenerateMapImage() (err error) {
+	var outputImage = image.NewRGBA64(image.Rectangle{Max: image.Point{X: int(XSize * 16), Y: int(YSize * 16)}})
+
+	var z, y, x int
+	for z = 0; z < len(OutputMatrix); z++ {
+		for y = 0; y < len(OutputMatrix[z]); y++ {
+			for x = 0; x < len(OutputMatrix[z][y]); x++ {
+				var wfcStruct = IndexedStructs[OutputMatrix[z][y][x]]
+				var textureName = filepath.Base(wfcStruct.Texture)
+				var textureMatrix = make([][]*color.RGBA64, len(IndexedAssets[textureName]))
+
+				var textureX, textureY int
+				for textureX = 0; textureX < len(IndexedAssets[textureName]); textureX++ {
+					textureMatrix[textureX] = make([]*color.RGBA64, len(IndexedAssets[textureName][textureX]))
+
+					for textureY = 0; textureY < len(IndexedAssets[textureName][textureX]); textureY++ {
+						textureMatrix[textureX][textureY] = IndexedAssets[textureName][textureX][textureY]
+					}
+				}
+
+				var i int8
+				for {
+					if i == wfcStruct.Rotation {
+						break
+					}
+
+					textureMatrix = RotateRGBA64Matrix(textureMatrix)
+
+					i = i + 1
+				}
+
+				for textureX = 0; textureX < len(textureMatrix); textureX++ {
+					for textureY = 0; textureY < len(textureMatrix[textureX]); textureY++ {
+						outputImage.SetRGBA64((x*len(textureMatrix))+textureX, (y*len(textureMatrix[textureX]))+textureY, *textureMatrix[textureX][textureY])
+					}
+				}
+			}
+		}
+	}
+
+	var imageFile *os.File
+	if imageFile, err = os.Create(OutputMapImageFilePath); err != nil {
+		return
+	}
+
+	err = png.Encode(imageFile, outputImage)
+
+	return
+}
+
+func main() {
+	var err error
+	var startTime = time.Now()
+	var leadTime = time.Now()
+
+	log.Println(`loading input.json...`)
+
+	if err = LoadInput(); err != nil {
+		log.Fatalln(err)
+	}
+
+	log.Printf(`loading input took %s`, time.Since(leadTime).String())
+
+	log.Println(`loading assets...`)
+
+	leadTime = time.Now()
+
+	if err = LoadAssets(); err != nil {
+		log.Fatalln(err)
+	}
+
+	log.Printf(`loading assets took %s`, time.Since(leadTime).String())
+
+	log.Println(`generating rotations...`)
+
+	leadTime = time.Now()
+
+	GenerateRotations()
+
+	log.Printf(`generate rotations took %s`, time.Since(leadTime).String())
+
+	log.Println(`generating map...`)
+
+	leadTime = time.Now()
+
+	if err = GenerateMap(); err != nil {
+		log.Fatalln(err)
+	}
+
+	log.Printf(`generating map took %s`, time.Since(leadTime).String())
+
+	log.Println(`generating map image...`)
+
+	leadTime = time.Now()
+
+	if err = GenerateMapImage(); err != nil {
+		log.Fatalln(err)
+	}
+
+	log.Printf(`generating map image took %s`, time.Since(leadTime).String())
+
+	log.Printf(`input structures %d`, len(Structs))
+	log.Printf(`output structures %d`, len(IndexedStructs))
+	log.Printf(`finished in %s`, time.Since(startTime).String())
 }
